@@ -70,6 +70,10 @@ def tokenize_texts(
 def _get_last_token_positions(attention_mask: torch.Tensor) -> torch.Tensor:
     """Find the index of the last non-padding token for each sequence.
 
+    With left-padding (used by tokenize_texts), real tokens are right-aligned,
+    so the last real token is always at seq_len - 1. With right-padding, the
+    last real token is at sum(mask) - 1.
+
     Args:
         attention_mask: Binary mask of shape (batch, seq_len) where 1 indicates
             a real token and 0 indicates padding.
@@ -78,8 +82,12 @@ def _get_last_token_positions(attention_mask: torch.Tensor) -> torch.Tensor:
         LongTensor of shape (batch,) with the index of the last attended
         position in each sequence.
     """
-    # Sum attention mask per row and subtract 1 to get the last valid index
-    return attention_mask.sum(dim=1).long() - 1
+    # Find the last position where attention_mask == 1 in each row.
+    # Flip the mask, find the first 1 from the right, convert back to index.
+    seq_len = attention_mask.size(1)
+    reversed_mask = attention_mask.flip(dims=[1])
+    first_one_from_right = reversed_mask.argmax(dim=1)
+    return (seq_len - 1 - first_one_from_right).long()
 
 
 def extract_activations(
