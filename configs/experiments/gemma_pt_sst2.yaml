@@ -1,0 +1,18 @@
+# Gemma-2 2B (pretrained) + SST-2 Sentiment Steering
+# Model: google/gemma-2-2b base pretrained model (2304-dim, 26 layers)
+# SAE:   Gemma Scope 2B-pt residual-stream canonical SAEs (width 16k)
+# Hook:  hook_resid_post (Gemma Scope SAEs trained on post-residual activations)
+# Task:  Steer toward positive sentiment
+
+experiment_name: gemma-2-2b-pt_sst2
+
+model:
+  name: gemma-2-2b-pt
+  tl_name: google/gemma-2-2b
+  sae_release: gemma-scope-2b-pt-res-canonical
+  sae_id_template: "layer_{layer}/width_16k/canonical"
+  hook_template: "blocks.{layer}.hook_resid_post"
+  d_model: 2304
+  n_layers: 26
+  steering_layer: 15           # ~60% depth; tune via probe sweep
+  batch_size: 4                # smaller batch for larger model

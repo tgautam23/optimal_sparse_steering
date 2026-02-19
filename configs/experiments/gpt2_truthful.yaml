@@ -1,0 +1,18 @@
+# GPT-2 Small + TruthfulQA Truthfulness Steering
+# Task: Steer toward truthful answers (target_class=1).
+# Data: TruthfulQA generation split — questions with human-annotated labels.
+# Eval: Uses default classifier (sentiment proxy); swap to a truthfulness
+#       judge if one becomes available.
+
+experiment_name: gpt2-small_truthful
+
+data:
+  dataset_name: truthfulness
+  hf_path: truthfulqa/truthful_qa
+  hf_config: generation        # TruthfulQA requires config name
+  split: validation
+  text_col: question
+  label_col: label
+
+steering:
+  target_class: 1             # steer toward truthful

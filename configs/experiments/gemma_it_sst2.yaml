@@ -1,0 +1,20 @@
+# Gemma-2 2B (instruction-tuned) + SST-2 Sentiment Steering
+# Model: google/gemma-2-2b-it instruction-tuned model (2304-dim, 26 layers)
+# SAE:   gemma-scope-2b-pt-res-canonical — NOTE: using BASE pretrained SAEs
+#        on the instruct model. This is a deliberate transfer experiment to
+#        test whether SAE features learned on the base model still provide
+#        meaningful steering directions for the instruction-tuned variant.
+# Task:  Steer toward positive sentiment
+
+experiment_name: gemma-2-2b-it_sst2
+
+model:
+  name: gemma-2-2b-it
+  tl_name: google/gemma-2-2b-it
+  sae_release: gemma-scope-2b-pt-res-canonical   # base SAEs on instruct model
+  sae_id_template: "layer_{layer}/width_16k/canonical"
+  hook_template: "blocks.{layer}.hook_resid_post"
+  d_model: 2304
+  n_layers: 26
+  steering_layer: 15
+  batch_size: 4

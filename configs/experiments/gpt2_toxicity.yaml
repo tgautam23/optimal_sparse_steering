@@ -1,0 +1,20 @@
+# GPT-2 Small + Civil Comments Toxicity Steering
+# Task: Steer toward toxic class (target_class=1) to test detoxification control.
+# Data: Google Civil Comments with continuous toxicity scores binarized at 0.5.
+# Eval: Toxic-BERT classifier instead of default SST-2 sentiment classifier.
+
+experiment_name: gpt2-small_toxicity
+
+data:
+  dataset_name: toxicity
+  hf_path: google/civil_comments
+  split: test
+  text_col: text
+  label_col: toxicity
+  toxicity_threshold: 0.5     # binarize continuous scores: >= 0.5 → toxic
+
+steering:
+  target_class: 1             # steer toward toxic direction
+
+eval:
+  classifier_name: unitary/toxic-bert

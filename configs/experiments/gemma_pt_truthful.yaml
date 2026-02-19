@@ -1,0 +1,28 @@
+# Gemma-2 2B (pretrained) + TruthfulQA Truthfulness Steering
+# Model: google/gemma-2-2b base pretrained model (2304-dim, 26 layers)
+# SAE:   Gemma Scope 2B-pt residual-stream canonical SAEs (width 16k)
+# Task:  Steer toward truthful answers
+
+experiment_name: gemma-2-2b-pt_truthful
+
+model:
+  name: gemma-2-2b-pt
+  tl_name: google/gemma-2-2b
+  sae_release: gemma-scope-2b-pt-res-canonical
+  sae_id_template: "layer_{layer}/width_16k/canonical"
+  hook_template: "blocks.{layer}.hook_resid_post"
+  d_model: 2304
+  n_layers: 26
+  steering_layer: 15
+  batch_size: 4
+
+data:
+  dataset_name: truthfulness
+  hf_path: truthfulqa/truthful_qa
+  hf_config: generation
+  split: validation
+  text_col: question
+  label_col: label
+
+steering:
+  target_class: 1

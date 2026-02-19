@@ -1,0 +1,32 @@
+# Gemma-2 2B (instruction-tuned) + Civil Comments Toxicity Steering
+# Model: google/gemma-2-2b-it instruction-tuned model (2304-dim, 26 layers)
+# SAE:   gemma-scope-2b-pt-res-canonical — base pretrained SAEs on instruct
+#        model (transfer experiment).
+# Task:  Steer toward toxic direction for detoxification control
+
+experiment_name: gemma-2-2b-it_toxicity
+
+model:
+  name: gemma-2-2b-it
+  tl_name: google/gemma-2-2b-it
+  sae_release: gemma-scope-2b-pt-res-canonical   # base SAEs on instruct model
+  sae_id_template: "layer_{layer}/width_16k/canonical"
+  hook_template: "blocks.{layer}.hook_resid_post"
+  d_model: 2304
+  n_layers: 26
+  steering_layer: 15
+  batch_size: 4
+
+data:
+  dataset_name: toxicity
+  hf_path: google/civil_comments
+  split: test
+  text_col: text
+  label_col: toxicity
+  toxicity_threshold: 0.5
+
+steering:
+  target_class: 1
+
+eval:
+  classifier_name: unitary/toxic-bert
