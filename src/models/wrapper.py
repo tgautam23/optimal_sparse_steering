@@ -1,9 +1,9 @@
-"""ModelWrapper around HookedSAETransformer with SAE caching."""
+"""ModelWrapper around HookedTransformer with SAE caching."""
 
 from __future__ import annotations
 
 import torch
-from transformer_lens import HookedSAETransformer
+from transformer_lens import HookedTransformer
 from sae_lens import SAE
 
 from configs.base import ModelConfig
@@ -22,7 +22,7 @@ class ModelWrapper:
 
     def __init__(self, config: ModelConfig) -> None:
         self._config = config
-        self._model: HookedSAETransformer = HookedSAETransformer.from_pretrained(
+        self._model: HookedTransformer = HookedTransformer.from_pretrained(
             config.tl_name,
             device=config.device,
             dtype=getattr(torch, config.dtype),
@@ -40,8 +40,8 @@ class ModelWrapper:
         return self._config
 
     @property
-    def model(self) -> HookedSAETransformer:
-        """Return the underlying HookedSAETransformer."""
+    def model(self) -> HookedTransformer:
+        """Return the underlying HookedTransformer."""
         return self._model
 
     @property
@@ -93,7 +93,7 @@ class ModelWrapper:
         tokens : torch.Tensor
             Input token ids of shape ``(batch, seq)``.
         names_filter : str | list[str] | callable | None
-            Passed directly to ``HookedSAETransformer.run_with_cache``.
+            Passed directly to ``HookedTransformer.run_with_cache``.
 
         Returns
         -------
