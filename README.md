@@ -139,15 +139,12 @@ pip install pandas jupyter
 
 The notebooks are designed to run on Colab's free T4 GPU tier. Each notebook includes a setup cell that handles path configuration automatically.
 
-<!-- TODO: Add Colab badge links after pushing to GitHub -->
-<!--
 | Notebook | Colab |
 |----------|-------|
-| CAA Baselines | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/optimal_sparse_steering/blob/main/notebooks/01_caa_baselines.ipynb) |
-| SAE Feature Steering | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/optimal_sparse_steering/blob/main/notebooks/02_sae_feature_steering.ipynb) |
-| Optimal Sparse Steering | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/optimal_sparse_steering/blob/main/notebooks/03_optimal_sparse_steering.ipynb) |
-| Full Comparison | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/optimal_sparse_steering/blob/main/notebooks/04_full_comparison.ipynb) |
--->
+| CAA Baselines | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tgautam23/optimal_sparse_steering/blob/main/notebooks/01_caa_baselines.ipynb) |
+| SAE Feature Steering | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tgautam23/optimal_sparse_steering/blob/main/notebooks/02_sae_feature_steering.ipynb) |
+| Optimal Sparse Steering | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tgautam23/optimal_sparse_steering/blob/main/notebooks/03_optimal_sparse_steering.ipynb) |
+| Full Comparison | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tgautam23/optimal_sparse_steering/blob/main/notebooks/04_full_comparison.ipynb) |
 
 ## Quick Start
 
