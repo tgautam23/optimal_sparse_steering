@@ -126,16 +126,34 @@ class QPOptimalSteering(SteeringMethod):
         d_sae, d_model = D_np.shape
 
         # --- Pre-filter features ---
+        # Hybrid strategy: keep features that are either (a) already active
+        # for this input (top by activation magnitude) or (b) useful for
+        # steering (top by probe-relevance |d_i^T w|).  This avoids
+        # excluding target-attribute features that have near-zero activation
+        # on the current input.
+        # Probe relevance per feature: cosine alignment |d_i^T w| / ||d_i||
+        D_norms = np.linalg.norm(D_np, axis=1)  # (d_sae,)
+        D_norms = np.maximum(D_norms, 1e-8)      # avoid division by zero
+        Dw_full = D_np @ w_np  # (d_sae,)
+        probe_relevance = np.abs(Dw_full) / D_norms  # normalized alignment
+
+        n_keep = min(self.prefilter_topk, d_sae)
+        n_half = n_keep // 2
+
         if sae_features is not None:
             feat_np = (
                 sae_features.detach().cpu().numpy()
                 if isinstance(sae_features, torch.Tensor)
                 else np.asarray(sae_features)
             )
-            n_keep = min(self.prefilter_topk, d_sae)
-            top_indices = np.argsort(np.abs(feat_np))[::-1][:n_keep]
+            # Top features by activation magnitude (coherence)
+            top_by_act = set(np.argsort(np.abs(feat_np))[::-1][:n_half].tolist())
+            # Top features by normalized probe relevance (effectiveness)
+            top_by_probe = set(np.argsort(probe_relevance)[::-1][:n_half].tolist())
+            # Union of both sets
+            selected = sorted(top_by_act | top_by_probe)
             mask = np.zeros(d_sae, dtype=bool)
-            mask[top_indices] = True
+            mask[selected] = True
             self._feature_mask = mask
         else:
             mask = np.ones(d_sae, dtype=bool)

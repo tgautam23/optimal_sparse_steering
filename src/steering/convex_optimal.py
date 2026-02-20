@@ -43,13 +43,13 @@ class ConvexOptimalSteering(SteeringMethod):
 
     def __init__(self, epsilon: float = 5.0, tau: float = 0.5,
                  solver: str = "SCS", max_iters: int = 10000,
-                 prefilter_threshold: float = 0.01):
+                 prefilter_topk: int = 2000):
         super().__init__("convex_optimal")
         self.epsilon = epsilon
         self.tau = tau
         self.solver = solver
         self.max_iters = max_iters
-        self.prefilter_threshold = prefilter_threshold
+        self.prefilter_topk = prefilter_topk
 
         # Stored after compute
         self._delta: Optional[np.ndarray] = None
@@ -106,17 +106,33 @@ class ConvexOptimalSteering(SteeringMethod):
         d_sae, d_model = D_np.shape
 
         # Pre-filter features to keep CVXPY fast
+        # Hybrid strategy: keep features that are either (a) already active
+        # for this input (top by activation magnitude) or (b) useful for
+        # steering (top by probe-relevance |d_i^T w|).  This avoids
+        # excluding target-attribute features that have near-zero activation
+        # on the current input.
+        # Probe relevance per feature: cosine alignment |d_i^T w| / ||d_i||
+        D_norms = np.linalg.norm(D_np, axis=1)  # (d_sae,)
+        D_norms = np.maximum(D_norms, 1e-8)      # avoid division by zero
+        Dw_full = D_np @ w_np  # (d_sae,)
+        probe_relevance = np.abs(Dw_full) / D_norms  # normalized alignment
+
+        n_keep = min(self.prefilter_topk, d_sae)
+        n_half = n_keep // 2
+
         if sae_features is not None:
             if isinstance(sae_features, torch.Tensor):
                 feat_np = sae_features.detach().cpu().numpy()
             else:
                 feat_np = np.asarray(sae_features)
-            # Keep features with activation above threshold
-            mask = np.abs(feat_np) > self.prefilter_threshold
-            # Always include at least top 500 features by activation magnitude
-            if mask.sum() < 500:
-                top_indices = np.argsort(np.abs(feat_np))[::-1][:500]
-                mask[top_indices] = True
+            # Top features by activation magnitude (coherence)
+            top_by_act = set(np.argsort(np.abs(feat_np))[::-1][:n_half].tolist())
+            # Top features by normalized probe relevance (effectiveness)
+            top_by_probe = set(np.argsort(probe_relevance)[::-1][:n_half].tolist())
+            # Union of both sets
+            selected = sorted(top_by_act | top_by_probe)
+            mask = np.zeros(d_sae, dtype=bool)
+            mask[selected] = True
             self._feature_mask = mask
         else:
             mask = np.ones(d_sae, dtype=bool)

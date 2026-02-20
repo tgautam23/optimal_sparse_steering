@@ -16,15 +16,41 @@ logger = logging.getLogger(__name__)
 
 
 def _load_sst2(config: DataConfig) -> dict[str, list]:
-    """Load SST-2 sentiment dataset.
+    """Load SST-2 sentiment dataset with optional balanced subsampling.
 
-    Uses the validation split (since the test split has hidden labels).
-    Labels are already binary: 0 = negative, 1 = positive.
+    Uses the validation split by default (since the test split has hidden
+    labels).  Labels are already binary: 0 = negative, 1 = positive.
+    When ``config.max_samples_per_class`` is set, subsamples each class
+    to at most that many examples for a balanced dataset.
     """
     ds = load_dataset(config.hf_path, split=config.split)
-    texts = ds[config.text_col]
-    labels = ds[config.label_col]
-    logger.info("Loaded SST-2 %s split: %d examples", config.split, len(texts))
+    texts_all = ds[config.text_col]
+    labels_all = ds[config.label_col]
+
+    logger.info("Loaded SST-2 %s split: %d examples", config.split, len(texts_all))
+
+    # Balanced subsample if dataset is larger than the budget
+    class_indices: dict[int, list[int]] = {0: [], 1: []}
+    for idx, label in enumerate(labels_all):
+        class_indices[label].append(idx)
+
+    rng = np.random.default_rng(seed=42)
+    sampled_indices: list[int] = []
+    for cls in [0, 1]:
+        indices = np.array(class_indices[cls])
+        n_sample = min(len(indices), config.max_samples_per_class)
+        chosen = rng.choice(indices, size=n_sample, replace=False)
+        sampled_indices.extend(chosen.tolist())
+
+    rng.shuffle(sampled_indices)
+    texts = [texts_all[i] for i in sampled_indices]
+    labels = [labels_all[i] for i in sampled_indices]
+
+    logger.info(
+        "SST-2 after balanced subsampling: %d examples (max %d per class)",
+        len(texts),
+        config.max_samples_per_class,
+    )
     return {"texts": texts, "labels": labels}
 
 
