@@ -99,6 +99,13 @@ class ConceptSubspace:
         signs = np.sign(selected_s)
         signs[signs == 0] = 1.0  # avoid zero sign
         self._directions = signs[:, None] * selected_V  # (k, d_model)
+
+        # ---- Explicit unit normalization for well-behavedness ----
+        # SVD rows are already unit-norm, but normalize explicitly to
+        # guard against numerical drift and keep constraints well-scaled.
+        norms = np.linalg.norm(self._directions, axis=1, keepdims=True)
+        self._directions = self._directions / np.maximum(norms, 1e-8)
+
         self._class_separations = signs * selected_s     # now all positive
 
         # Midpoints: w_j^T (mu_0 + mu_1) / 2

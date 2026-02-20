@@ -48,10 +48,10 @@ class ExperimentRunner:
         logger.info(f"Train: {len(self.data['train_texts'])}, Test: {len(self.data['test_texts'])}")
 
     def select_layer(self):
-        """Sweep all layers and select the one with highest concept concentration."""
-        from src.probes.layer_sweep import concept_concentration_sweep, find_best_layer
+        """Sweep all layers and select the one with best SAE-concept alignment."""
+        from src.probes.layer_sweep import alignment_sweep, find_best_layer
 
-        sweep = concept_concentration_sweep(
+        sweep = alignment_sweep(
             texts=self.data["train_texts"],
             labels=self.data["train_labels"],
             model_wrapper=self.model_wrapper,
@@ -64,14 +64,13 @@ class ExperimentRunner:
         r = sweep[best]
         logger.info(
             f"Layer sweep complete. Selected layer {best} "
-            f"(explained_var={r['explained_var']:.4f}, R^2_k={r['r2_k']:.4f})"
+            f"(alignment={r['alignment']:.4f})"
         )
         self.config.model.steering_layer = best
         # Re-load SAE for the selected layer
         self.model_wrapper.get_sae(best)
         self.results["layer_sweep"] = {
-            k: {"r2_k": v["r2_k"], "explained_var": v["explained_var"]}
-            for k, v in sweep.items()
+            k: v["alignment"] for k, v in sweep.items()
         }
         self.results["selected_layer"] = best
 

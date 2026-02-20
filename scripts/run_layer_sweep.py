@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI: concept concentration sweep across all layers."""
+"""CLI: SAE-concept alignment sweep across all layers."""
 
 import argparse
 import json
@@ -12,15 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from configs.base import load_config
 from src.data.loader import load_dataset_splits
 from src.models.wrapper import ModelWrapper
-from src.probes.layer_sweep import concept_concentration_sweep, find_best_layer
+from src.probes.layer_sweep import alignment_sweep, find_best_layer
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sweep concept concentration across layers")
+    parser = argparse.ArgumentParser(description="Sweep SAE-concept alignment across layers")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--n-components", type=int, default=None, help="PCA components (default: from config)")
-    parser.add_argument("--n-select", type=int, default=None, help="Top-k directions for R^2_k (default: from config)")
+    parser.add_argument("--n-select", type=int, default=None, help="Top-k directions (default: from config)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -45,7 +45,7 @@ def main():
     all_labels = data["train_labels"] + data["test_labels"]
 
     # Run sweep
-    results = concept_concentration_sweep(
+    results = alignment_sweep(
         texts=all_texts,
         labels=all_labels,
         model_wrapper=model_wrapper,
@@ -56,7 +56,7 @@ def main():
     )
 
     best = find_best_layer(results)
-    print(f"\nBest layer: {best} (R^2_k = {results[best]['r2_k']:.4f})")
+    print(f"\nBest layer: {best} (alignment = {results[best]['alignment']:.4f})")
 
     # Save results
     results_dir = Path(config.eval.results_dir) / "layer_sweeps"
