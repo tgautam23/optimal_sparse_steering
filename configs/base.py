@@ -52,8 +52,6 @@ class SteeringConfig:
     alpha: float = 5.0
     # SOCP coherence budget (epsilon)
     epsilon: float = 5.0
-    # SOCP probe margin (tau')
-    tau: float = 0.5
     # Target class for steering (1 = positive sentiment, toxic, truthful)
     target_class: int = 1
     # Top-k for correlation-based method
@@ -69,6 +67,9 @@ class SteeringConfig:
     # CVXPY solver
     solver: str = "SCS"
     solver_max_iters: int = 10000
+    # Concept subspace settings
+    subspace_n_components: int = 50
+    subspace_n_select: int = 5
 
 
 @dataclass

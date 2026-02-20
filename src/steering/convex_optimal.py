@@ -5,18 +5,17 @@ using a Second-Order Cone Program (SOCP) formulation.
 
 Formulation:
     minimize    1^T delta
-    s.t.  (D @ w)^T delta >= tau' - w^T h - b    (linear: probe constraint)
-          ||delta @ D||_2 <= epsilon               (SOC: coherence budget)
-          delta >= 0                                (non-negativity)
+    s.t.  w_j^T D^T delta >= gamma_j(h),  j = 1, ..., k   (concept subspace constraints)
+          ||delta @ D||_2 <= epsilon                        (SOC: coherence budget)
+          delta >= 0                                        (non-negativity)
 
 Where:
-    delta ∈ R^{d_sae}  — sparse feature activation perturbation
-    D ∈ R^{d_sae x d_model} — SAE decoder matrix
-    w ∈ R^{d_model} — probe weight vector
-    b ∈ R — probe bias
-    h ∈ R^{d_model} — current residual stream activation for the input
-    tau' — desired probe margin (target class score)
-    epsilon — coherence budget (max L2 norm of perturbation in residual space)
+    delta in R^{d_sae}  -- sparse feature activation perturbation
+    D in R^{d_sae x d_model} -- SAE decoder matrix
+    W = {w_1, ..., w_k} -- concept subspace directions
+    h in R^{d_model} -- current residual stream activation for the input
+    gamma_j(h) -- per-direction RHS (gap to class-1 mean projection)
+    epsilon -- coherence budget (max L2 norm of perturbation in residual space)
 """
 
 import logging
@@ -35,18 +34,17 @@ class ConvexOptimalSteering(SteeringMethod):
     """SOCP-based optimal sparse steering in SAE feature space.
 
     Finds the minimum-L1 (sparsest) feature perturbation that:
-    1. Shifts the probe score past the target margin
+    1. Shifts the concept subspace projections past target margins
     2. Keeps the residual-stream perturbation within an L2 budget
 
     This is solved per-input, producing an input-dependent steering vector.
     """
 
-    def __init__(self, epsilon: float = 5.0, tau: float = 0.5,
+    def __init__(self, epsilon: float = 5.0,
                  solver: str = "SCS", max_iters: int = 10000,
                  prefilter_topk: int = 2000):
         super().__init__("convex_optimal")
         self.epsilon = epsilon
-        self.tau = tau
         self.solver = solver
         self.max_iters = max_iters
         self.prefilter_topk = prefilter_topk
@@ -59,63 +57,39 @@ class ConvexOptimalSteering(SteeringMethod):
 
     def compute_steering_vector(
         self,
-        h: torch.Tensor = None,
-        probe_w: np.ndarray = None,
-        probe_b: float = None,
-        D: torch.Tensor = None,
+        h: torch.Tensor,
+        D: torch.Tensor,
+        concept_subspace,
         sae_features: torch.Tensor = None,
         target_class: int = 1,
         epsilon: float = None,
-        tau: float = None,
         **kwargs,
     ) -> torch.Tensor:
         """Solve the SOCP for a single input to find the optimal sparse steering.
 
         Args:
             h: Current residual stream activation, shape (d_model,).
-            probe_w: Probe weight vector, shape (d_model,).
-            probe_b: Probe bias scalar.
             D: SAE decoder matrix, shape (d_sae, d_model).
+            concept_subspace: ConceptSubspace instance providing k concept
+                directions and constraint RHS computation.
             sae_features: SAE feature activations for pre-filtering, shape (d_sae,).
-                If provided, features with activation below prefilter_threshold are excluded.
-            target_class: Which class to steer toward (0 or 1). If 0, we negate the
-                probe direction so the formulation stays the same.
+            target_class: Which class to steer toward (0 or 1).
             epsilon: Override coherence budget.
-            tau: Override probe margin.
 
         Returns:
             Steering vector in residual stream space, shape (d_model,).
         """
         if epsilon is not None:
             self.epsilon = epsilon
-        if tau is not None:
-            self.tau = tau
 
         # Convert inputs to numpy
         h_np = h.detach().cpu().numpy().astype(np.float64) if isinstance(h, torch.Tensor) else np.asarray(h, dtype=np.float64)
-        w_np = np.asarray(probe_w, dtype=np.float64)
-        b_val = float(probe_b)
         D_np = D.detach().cpu().numpy().astype(np.float64) if isinstance(D, torch.Tensor) else np.asarray(D, dtype=np.float64)
-
-        # If steering toward class 0, negate probe direction
-        if target_class == 0:
-            w_np = -w_np
-            b_val = -b_val
-            self.tau = -self.tau if self.tau < 0 else self.tau
 
         d_sae, d_model = D_np.shape
 
-        # Pre-filter features to keep CVXPY fast
-        # Hybrid strategy: keep features that are either (a) already active
-        # for this input (top by activation magnitude) or (b) useful for
-        # steering (top by probe-relevance |d_i^T w|).  This avoids
-        # excluding target-attribute features that have near-zero activation
-        # on the current input.
-        # Probe relevance per feature: cosine alignment |d_i^T w| / ||d_i||
-        D_norms = np.linalg.norm(D_np, axis=1)  # (d_sae,)
-        D_norms = np.maximum(D_norms, 1e-8)      # avoid division by zero
-        Dw_full = D_np @ w_np  # (d_sae,)
-        probe_relevance = np.abs(Dw_full) / D_norms  # normalized alignment
+        # --- Multi-direction pre-filtering ---
+        subspace_relevance = concept_subspace.compute_prefilter_relevance(D_np)
 
         n_keep = min(self.prefilter_topk, d_sae)
         n_half = n_keep // 2
@@ -125,12 +99,9 @@ class ConvexOptimalSteering(SteeringMethod):
                 feat_np = sae_features.detach().cpu().numpy()
             else:
                 feat_np = np.asarray(sae_features)
-            # Top features by activation magnitude (coherence)
             top_by_act = set(np.argsort(np.abs(feat_np))[::-1][:n_half].tolist())
-            # Top features by normalized probe relevance (effectiveness)
-            top_by_probe = set(np.argsort(probe_relevance)[::-1][:n_half].tolist())
-            # Union of both sets
-            selected = sorted(top_by_act | top_by_probe)
+            top_by_rel = set(np.argsort(subspace_relevance)[::-1][:n_half].tolist())
+            selected = sorted(top_by_act | top_by_rel)
             mask = np.zeros(d_sae, dtype=bool)
             mask[selected] = True
             self._feature_mask = mask
@@ -142,31 +113,24 @@ class ConvexOptimalSteering(SteeringMethod):
         n_active = len(active_idx)
         logger.info(f"ConvexOptimal: {n_active}/{d_sae} active features after pre-filtering")
 
-        # Subselect decoder rows
         D_sub = D_np[active_idx]  # (n_active, d_model)
 
-        # Precompute probe-projected decoder: (D @ w) for each active feature
-        Dw = D_sub @ w_np  # (n_active,)
+        # Build k linear constraints: w_j^T D_sub^T delta >= rhs_j
+        rhs_vec = concept_subspace.compute_rhs(h_np)  # (k,)
+        DW = D_sub @ concept_subspace.directions.T  # (n_active, k)
 
-        # Current probe score: w^T h + b
-        current_score = w_np @ h_np + b_val
-        logger.info(f"ConvexOptimal: current probe score = {current_score:.4f}, target margin = {self.tau:.4f}")
+        logger.info(
+            f"ConvexOptimal: k={concept_subspace.n_directions} constraints, "
+            f"rhs range = [{rhs_vec.min():.4f}, {rhs_vec.max():.4f}]"
+        )
 
-        # RHS of probe constraint
-        rhs = self.tau - current_score  # need Dw^T delta >= rhs
-
-        # Define CVXPY problem
         delta = cp.Variable(n_active, nonneg=True)
-
-        # Objective: minimize L1 (since delta >= 0, ||delta||_1 = 1^T delta)
         objective = cp.Minimize(cp.sum(delta))
 
-        constraints = [
-            # Probe constraint: projected perturbation must exceed margin
-            Dw @ delta >= rhs,
-            # Coherence constraint: L2 norm of perturbation in residual space
-            cp.norm(D_sub.T @ delta, 2) <= self.epsilon,
-        ]
+        constraints = [DW[:, j] @ delta >= rhs_vec[j]
+                       for j in range(concept_subspace.n_directions)]
+        # Coherence constraint
+        constraints.append(cp.norm(D_sub.T @ delta, 2) <= self.epsilon)
 
         problem = cp.Problem(objective, constraints)
 
@@ -214,9 +178,8 @@ class ConvexOptimalSteering(SteeringMethod):
     def compute_batch_steering(
         self,
         activations: torch.Tensor,
-        probe_w: np.ndarray,
-        probe_b: float,
         D: torch.Tensor,
+        concept_subspace,
         sae_features_batch: torch.Tensor = None,
         target_class: int = 1,
         **kwargs,
@@ -225,9 +188,8 @@ class ConvexOptimalSteering(SteeringMethod):
 
         Args:
             activations: Batch of activations, shape (batch, d_model).
-            probe_w: Probe weight vector, shape (d_model,).
-            probe_b: Probe bias scalar.
             D: SAE decoder matrix, shape (d_sae, d_model).
+            concept_subspace: ConceptSubspace for multi-constraint mode.
             sae_features_batch: SAE features, shape (batch, d_sae). Optional.
             target_class: Target class for steering.
 
@@ -242,9 +204,8 @@ class ConvexOptimalSteering(SteeringMethod):
             sae_feat_i = sae_features_batch[i] if sae_features_batch is not None else None
             vec = self.compute_steering_vector(
                 h=h_i,
-                probe_w=probe_w,
-                probe_b=probe_b,
                 D=D,
+                concept_subspace=concept_subspace,
                 sae_features=sae_feat_i,
                 target_class=target_class,
                 **kwargs,
@@ -275,7 +236,6 @@ class ConvexOptimalSteering(SteeringMethod):
         info = super().summary()
         info["solve_status"] = self.solve_status
         info["epsilon"] = self.epsilon
-        info["tau"] = self.tau
         if self._delta is not None:
             info["l0"] = int((self._delta > 1e-6).sum())
             info["l1"] = float(self._delta.sum())

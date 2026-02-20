@@ -7,6 +7,25 @@ import torch
 import torch.nn.functional as F
 
 
+def compute_subspace_score(concept_subspace, activations: np.ndarray) -> float:
+    """Mean fraction of subspace constraints satisfied across samples.
+
+    For each sample, checks each direction: w_j^T h >= w_j^T mu_1.
+
+    Args:
+        concept_subspace: A fitted ConceptSubspace instance.
+        activations: Array of shape (n_samples, d_model).
+
+    Returns:
+        Float in [0, 1] -- mean fraction of constraints satisfied.
+    """
+    activations = np.asarray(activations, dtype=np.float64)
+    thresholds = concept_subspace.compute_thresholds()  # (k,)
+    projections = activations @ concept_subspace.directions.T  # (n, k)
+    satisfied = (projections >= thresholds[None, :]).astype(float)
+    return float(satisfied.mean())
+
+
 def compute_probe_score(
     probe, activations: np.ndarray, target_class: int = 1
 ) -> float:

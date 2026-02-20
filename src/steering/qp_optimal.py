@@ -4,16 +4,15 @@ Reformulates the SOCP coherence constraint as a quadratic penalty in
 the objective, yielding a standard Quadratic Program:
 
     minimize    1^T delta  +  (lambda/2) * ||D^T delta||_2^2
-    s.t.        (D @ w)^T delta  >=  tau' - w^T h - b
+    s.t.        w_j^T D^T delta  >=  gamma_j(h),   j = 1, ..., k
                 delta >= 0
 
 Where:
     delta in R^{d_sae}  -- sparse feature activation perturbation
     D in R^{d_sae x d_model}  -- SAE decoder matrix
-    w in R^{d_model}  -- probe weight vector
-    b in R  -- probe bias
+    W = {w_1, ..., w_k}  -- concept subspace directions
     h in R^{d_model}  -- current residual stream activation
-    tau'  -- desired probe margin
+    gamma_j(h)  -- per-direction RHS (gap to class-1 mean projection)
     lambda  -- coherence penalty (trades off sparsity vs residual-space L2)
 
 Advantages over the SOCP formulation (convex_optimal.py):
@@ -40,14 +39,13 @@ class QPOptimalSteering(SteeringMethod):
     """QP-based optimal sparse steering in SAE feature space.
 
     Finds the minimum-L1 (sparsest) feature perturbation that shifts the
-    probe score past a target margin, penalised by the squared L2 norm
-    of the resulting residual-stream perturbation.
+    concept subspace projections past target margins, penalised by the
+    squared L2 norm of the resulting residual-stream perturbation.
     """
 
     def __init__(
         self,
         lam: float = 1.0,
-        tau: float = 0.5,
         solver: str = "SCS",
         max_iters: int = 10000,
         prefilter_topk: int = 2000,
@@ -55,7 +53,6 @@ class QPOptimalSteering(SteeringMethod):
     ):
         super().__init__("qp_optimal")
         self.lam = lam
-        self.tau = tau
         self.solver = solver
         self.max_iters = max_iters
         self.prefilter_topk = prefilter_topk
@@ -73,35 +70,30 @@ class QPOptimalSteering(SteeringMethod):
 
     def compute_steering_vector(
         self,
-        h: torch.Tensor = None,
-        probe_w: np.ndarray = None,
-        probe_b: float = None,
-        D: torch.Tensor = None,
+        h: torch.Tensor,
+        D: torch.Tensor,
+        concept_subspace,
         sae_features: torch.Tensor = None,
         target_class: int = 1,
         lam: float = None,
-        tau: float = None,
         **kwargs,
     ) -> torch.Tensor:
         """Solve the QP for a single input to find optimal sparse steering.
 
         Args:
             h: Current residual stream activation, shape (d_model,).
-            probe_w: Probe weight vector, shape (d_model,).
-            probe_b: Probe bias scalar.
             D: SAE decoder matrix, shape (d_sae, d_model).
+            concept_subspace: ConceptSubspace instance providing k concept
+                directions and constraint RHS computation.
             sae_features: SAE feature activations for pre-filtering, shape (d_sae,).
             target_class: Which class to steer toward (0 or 1).
             lam: Override coherence penalty weight.
-            tau: Override probe margin.
 
         Returns:
             Steering vector in residual stream space, shape (d_model,).
         """
         if lam is not None:
             self.lam = lam
-        if tau is not None:
-            self.tau = tau
 
         # --- Convert inputs to numpy float64 for CVXPY ---
         h_np = (
@@ -109,33 +101,16 @@ class QPOptimalSteering(SteeringMethod):
             if isinstance(h, torch.Tensor)
             else np.asarray(h, dtype=np.float64)
         )
-        w_np = np.asarray(probe_w, dtype=np.float64)
-        b_val = float(probe_b)
         D_np = (
             D.detach().cpu().numpy().astype(np.float64)
             if isinstance(D, torch.Tensor)
             else np.asarray(D, dtype=np.float64)
         )
 
-        # Negate probe direction for class 0
-        if target_class == 0:
-            w_np = -w_np
-            b_val = -b_val
-            self.tau = abs(self.tau)
-
         d_sae, d_model = D_np.shape
 
-        # --- Pre-filter features ---
-        # Hybrid strategy: keep features that are either (a) already active
-        # for this input (top by activation magnitude) or (b) useful for
-        # steering (top by probe-relevance |d_i^T w|).  This avoids
-        # excluding target-attribute features that have near-zero activation
-        # on the current input.
-        # Probe relevance per feature: cosine alignment |d_i^T w| / ||d_i||
-        D_norms = np.linalg.norm(D_np, axis=1)  # (d_sae,)
-        D_norms = np.maximum(D_norms, 1e-8)      # avoid division by zero
-        Dw_full = D_np @ w_np  # (d_sae,)
-        probe_relevance = np.abs(Dw_full) / D_norms  # normalized alignment
+        # --- Multi-direction pre-filtering ---
+        subspace_relevance = concept_subspace.compute_prefilter_relevance(D_np)
 
         n_keep = min(self.prefilter_topk, d_sae)
         n_half = n_keep // 2
@@ -146,12 +121,9 @@ class QPOptimalSteering(SteeringMethod):
                 if isinstance(sae_features, torch.Tensor)
                 else np.asarray(sae_features)
             )
-            # Top features by activation magnitude (coherence)
             top_by_act = set(np.argsort(np.abs(feat_np))[::-1][:n_half].tolist())
-            # Top features by normalized probe relevance (effectiveness)
-            top_by_probe = set(np.argsort(probe_relevance)[::-1][:n_half].tolist())
-            # Union of both sets
-            selected = sorted(top_by_act | top_by_probe)
+            top_by_rel = set(np.argsort(subspace_relevance)[::-1][:n_half].tolist())
+            selected = sorted(top_by_act | top_by_rel)
             mask = np.zeros(d_sae, dtype=bool)
             mask[selected] = True
             self._feature_mask = mask
@@ -163,27 +135,26 @@ class QPOptimalSteering(SteeringMethod):
         n_active = len(active_idx)
         logger.info(f"QPOptimal: {n_active}/{d_sae} active features after pre-filtering")
 
-        # --- Build subproblem matrices ---
-        D_sub = D_np[active_idx]       # (n_active, d_model)
-        Dw = D_sub @ w_np              # (n_active,)
+        D_sub = D_np[active_idx]  # (n_active, d_model)
 
-        current_score = float(w_np @ h_np + b_val)
-        rhs = self.tau - current_score
+        # Build k constraints: w_j^T D_sub^T delta >= rhs_j
+        rhs_vec = concept_subspace.compute_rhs(h_np)  # (k,)
+        DW = D_sub @ concept_subspace.directions.T  # (n_active, k)
+
         logger.info(
-            f"QPOptimal: current probe score = {current_score:.4f}, "
-            f"target margin = {self.tau:.4f}, rhs = {rhs:.4f}"
+            f"QPOptimal: k={concept_subspace.n_directions} constraints, "
+            f"rhs range = [{rhs_vec.min():.4f}, {rhs_vec.max():.4f}]"
         )
 
         # --- Define CVXPY QP ---
         delta = cp.Variable(n_active, nonneg=True)
 
-        # Objective: L1 sparsity + lambda/2 * squared L2 coherence
         sparsity_term = cp.sum(delta)
-        # ||D_sub^T @ delta||_2^2  -- CVXPY keeps this in factored form for SCS
         coherence_term = (self.lam / 2) * cp.sum_squares(D_sub.T @ delta)
         objective = cp.Minimize(sparsity_term + coherence_term)
 
-        constraints = [Dw @ delta >= rhs]
+        constraints = [DW[:, j] @ delta >= rhs_vec[j]
+                       for j in range(concept_subspace.n_directions)]
 
         problem = cp.Problem(objective, constraints)
 
@@ -266,9 +237,8 @@ class QPOptimalSteering(SteeringMethod):
     def compute_batch_steering(
         self,
         activations: torch.Tensor,
-        probe_w: np.ndarray,
-        probe_b: float,
         D: torch.Tensor,
+        concept_subspace,
         sae_features_batch: torch.Tensor = None,
         target_class: int = 1,
         **kwargs,
@@ -277,9 +247,8 @@ class QPOptimalSteering(SteeringMethod):
 
         Args:
             activations: Batch of activations, shape (batch, d_model).
-            probe_w: Probe weight vector, shape (d_model,).
-            probe_b: Probe bias scalar.
             D: SAE decoder matrix, shape (d_sae, d_model).
+            concept_subspace: ConceptSubspace for multi-constraint mode.
             sae_features_batch: SAE features, shape (batch, d_sae). Optional.
             target_class: Target class for steering.
 
@@ -300,9 +269,8 @@ class QPOptimalSteering(SteeringMethod):
             )
             vec = self.compute_steering_vector(
                 h=h_i,
-                probe_w=probe_w,
-                probe_b=probe_b,
                 D=D,
+                concept_subspace=concept_subspace,
                 sae_features=sae_feat_i,
                 target_class=target_class,
                 **kwargs,
@@ -319,23 +287,22 @@ class QPOptimalSteering(SteeringMethod):
     def compute_shared_steering(
         self,
         activations: torch.Tensor,
-        probe_w: np.ndarray,
-        probe_b: float,
         D: torch.Tensor,
+        concept_subspace,
         sae_features: torch.Tensor = None,
         target_class: int = 1,
         **kwargs,
     ) -> torch.Tensor:
         """Solve a single QP that steers the worst-case input in the batch.
 
-        Uses the input with the lowest current probe score (hardest to steer)
-        to define the RHS, producing one shared steering vector for all inputs.
+        Uses the input with the largest constraint shortfall (hardest to
+        satisfy all subspace constraints) to define the RHS, producing one
+        shared steering vector for all inputs.
 
         Args:
             activations: Batch of activations, shape (batch, d_model).
-            probe_w: Probe weight vector, shape (d_model,).
-            probe_b: Probe bias scalar.
             D: SAE decoder matrix, shape (d_sae, d_model).
+            concept_subspace: ConceptSubspace for multi-constraint mode.
             sae_features: SAE features for pre-filtering, shape (d_sae,).
                 Uses mean activation across batch if shape (batch, d_sae).
             target_class: Target class for steering.
@@ -343,27 +310,23 @@ class QPOptimalSteering(SteeringMethod):
         Returns:
             Single steering vector, shape (d_model,).
         """
-        w_np = np.asarray(probe_w, dtype=np.float64)
-        b_val = float(probe_b)
-
-        if target_class == 0:
-            w_eff = -w_np
-            b_eff = -b_val
-        else:
-            w_eff = w_np
-            b_eff = b_val
-
-        # Find the worst-case (lowest score) input
         acts_np = (
             activations.detach().cpu().numpy().astype(np.float64)
             if isinstance(activations, torch.Tensor)
             else np.asarray(activations, dtype=np.float64)
         )
-        scores = acts_np @ w_eff + b_eff  # (batch,)
-        worst_idx = int(np.argmin(scores))
+
+        # Worst-case: input with smallest minimum projection across
+        # concept directions (the hardest to satisfy all constraints)
+        projections = acts_np @ concept_subspace.directions.T  # (batch, k)
+        thresholds = concept_subspace.compute_thresholds()  # (k,)
+        # Margin shortfall per input: max over directions of (threshold - proj)
+        shortfalls = thresholds[None, :] - projections  # (batch, k)
+        worst_per_input = shortfalls.max(axis=1)  # (batch,)
+        worst_idx = int(np.argmax(worst_per_input))
         logger.info(
             f"QPOptimal shared: worst-case input {worst_idx} "
-            f"(score = {scores[worst_idx]:.4f})"
+            f"(max shortfall = {worst_per_input[worst_idx]:.4f})"
         )
 
         # Average SAE features for pre-filtering if batch provided
@@ -374,9 +337,8 @@ class QPOptimalSteering(SteeringMethod):
 
         return self.compute_steering_vector(
             h=activations[worst_idx],
-            probe_w=probe_w,
-            probe_b=probe_b,
             D=D,
+            concept_subspace=concept_subspace,
             sae_features=sae_feat_mean,
             target_class=target_class,
             **kwargs,
@@ -412,7 +374,6 @@ class QPOptimalSteering(SteeringMethod):
         info = super().summary()
         info["solve_status"] = self.solve_status
         info["lam"] = self.lam
-        info["tau"] = self.tau
         info["solver"] = self.solver
         info["solve_time"] = self.solve_time
         if self._delta is not None:

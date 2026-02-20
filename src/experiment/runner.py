@@ -14,9 +14,9 @@ from src.data.preprocessing import extract_activations, extract_sae_features
 from src.data.prompts import get_contrastive_pairs, get_persona_prefix, get_neutral_queries
 from src.models.wrapper import ModelWrapper
 from src.models.sae_utils import get_decoder_matrix
-from src.probes.linear_probe import LinearProbe
+from src.probes.concept_subspace import ConceptSubspace
 from src.steering import get_steering_method
-from src.evaluation.metrics import compute_probe_score, compute_kl_divergence, compute_l0
+from src.evaluation.metrics import compute_subspace_score, compute_kl_divergence, compute_l0
 from src.evaluation.generation import steered_generation, steered_forward
 from src.evaluation.text_classifier import get_classifier
 
@@ -29,7 +29,7 @@ class ExperimentRunner:
     def __init__(self, config: ExperimentConfig):
         self.config = config
         self.model_wrapper = None
-        self.probe = None
+        self.concept_subspace = None
         self.data = None
         self.results = {}
 
@@ -47,8 +47,8 @@ class ExperimentRunner:
         self.data = load_dataset_splits(self.config.data)
         logger.info(f"Train: {len(self.data['train_texts'])}, Test: {len(self.data['test_texts'])}")
 
-    def train_probe(self):
-        """Extract activations and train linear probe."""
+    def fit_subspace(self):
+        """Extract activations and fit concept subspace."""
         layer = self.config.model.steering_layer
         logger.info(f"Extracting activations at layer {layer}...")
 
@@ -66,16 +66,20 @@ class ExperimentRunner:
         self.train_labels = np.array(self.data["train_labels"])
         self.test_labels = np.array(self.data["test_labels"])
 
-        logger.info("Training linear probe...")
-        self.probe = LinearProbe(d_model=self.config.model.d_model)
-        self.probe.fit(self.train_activations, self.train_labels)
+        logger.info("Fitting concept subspace...")
+        self.concept_subspace = ConceptSubspace(
+            n_components=self.config.steering.subspace_n_components,
+            n_select=self.config.steering.subspace_n_select,
+        )
+        self.concept_subspace.fit(self.train_activations, self.train_labels)
 
-        train_acc = self.probe.score(self.train_activations, self.train_labels)
-        test_acc = self.probe.score(self.test_activations, self.test_labels)
-        logger.info(f"Probe accuracy — train: {train_acc:.4f}, test: {test_acc:.4f}")
+        logger.info(
+            f"Concept subspace fitted: k={self.concept_subspace.n_directions} directions, "
+            f"class separations = {self.concept_subspace.class_separations}"
+        )
 
-        self.results["probe_train_acc"] = train_acc
-        self.results["probe_test_acc"] = test_acc
+        self.results["subspace_n_directions"] = self.concept_subspace.n_directions
+        self.results["subspace_class_separations"] = self.concept_subspace.class_separations.tolist()
 
     def compute_steering(self, method_name: str = None):
         """Compute steering vector for the specified method."""
@@ -96,15 +100,13 @@ class ExperimentRunner:
         elif method_name == "convex_optimal":
             method_kwargs.update({
                 "epsilon": self.config.steering.epsilon,
-                "tau": self.config.steering.tau,
                 "solver": self.config.steering.solver,
                 "max_iters": self.config.steering.solver_max_iters,
-                "prefilter_threshold": self.config.steering.prefilter_threshold,
+                "prefilter_topk": self.config.steering.prefilter_topk,
             })
         elif method_name == "qp_optimal":
             method_kwargs.update({
                 "lam": self.config.steering.lam,
-                "tau": self.config.steering.tau,
                 "solver": self.config.steering.solver,
                 "max_iters": self.config.steering.solver_max_iters,
                 "prefilter_topk": self.config.steering.prefilter_topk,
@@ -160,7 +162,6 @@ class ExperimentRunner:
             )
 
         elif method_name == "convex_optimal":
-            # For convex, we solve per-input on test set (use first test example as demo)
             sae_features = extract_sae_features(
                 self.data["test_texts"][:1], self.model_wrapper, layer,
                 batch_size=1,
@@ -168,8 +169,8 @@ class ExperimentRunner:
             D = get_decoder_matrix(self.model_wrapper.get_sae(layer))
             h = torch.tensor(self.test_activations[0])
             method.compute_steering_vector(
-                h=h, probe_w=self.probe.weight_vector, probe_b=self.probe.bias,
-                D=D, sae_features=sae_features[0],
+                h=h, D=D, concept_subspace=self.concept_subspace,
+                sae_features=sae_features[0],
                 target_class=self.config.steering.target_class,
             )
 
@@ -181,8 +182,8 @@ class ExperimentRunner:
             D = get_decoder_matrix(self.model_wrapper.get_sae(layer))
             h = torch.tensor(self.test_activations[0])
             method.compute_steering_vector(
-                h=h, probe_w=self.probe.weight_vector, probe_b=self.probe.bias,
-                D=D, sae_features=sae_features[0],
+                h=h, D=D, concept_subspace=self.concept_subspace,
+                sae_features=sae_features[0],
                 target_class=self.config.steering.target_class,
             )
 
@@ -197,19 +198,18 @@ class ExperimentRunner:
         logger.info(f"Evaluating: {method_name}")
         eval_results = {"method": method_name}
 
-        # 1. Probe score on steered activations
-        #    Apply steering vector to test activations
+        # 1. Subspace score on steered activations
         sv = method.steering_vector.numpy()
         steered_acts = self.test_activations + alpha * sv[np.newaxis, :]
-        base_score = compute_probe_score(
-            self.probe, self.test_activations, self.config.steering.target_class
+        base_score = compute_subspace_score(
+            self.concept_subspace, self.test_activations
         )
-        steered_score = compute_probe_score(
-            self.probe, steered_acts, self.config.steering.target_class
+        steered_score = compute_subspace_score(
+            self.concept_subspace, steered_acts
         )
-        eval_results["probe_score_base"] = base_score
-        eval_results["probe_score_steered"] = steered_score
-        eval_results["probe_score_delta"] = steered_score - base_score
+        eval_results["subspace_score_base"] = base_score
+        eval_results["subspace_score_steered"] = steered_score
+        eval_results["subspace_score_delta"] = steered_score - base_score
 
         # 2. L0 sparsity (for SAE-based methods)
         if hasattr(method, "_delta") and method._delta is not None:
@@ -267,7 +267,7 @@ class ExperimentRunner:
         except Exception as e:
             logger.warning(f"KL divergence computation failed: {e}")
 
-        logger.info(f"Results for {method_name}: probe_delta={eval_results.get('probe_score_delta', 'N/A'):.4f}")
+        logger.info(f"Results for {method_name}: subspace_delta={eval_results.get('subspace_score_delta', 'N/A'):.4f}")
         return eval_results
 
     def save_results(self, eval_results: dict):
@@ -288,7 +288,6 @@ class ExperimentRunner:
                 "steering_layer": self.config.model.steering_layer,
                 "alpha": self.config.steering.alpha,
                 "epsilon": self.config.steering.epsilon,
-                "tau": self.config.steering.tau,
                 "target_class": self.config.steering.target_class,
             },
         }
@@ -305,7 +304,7 @@ class ExperimentRunner:
 
         self.setup()
         self.load_data()
-        self.train_probe()
+        self.fit_subspace()
         method = self.compute_steering(method_name)
         eval_results = self.evaluate(method)
         filepath = self.save_results(eval_results)
