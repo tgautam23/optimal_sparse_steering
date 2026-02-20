@@ -61,11 +61,18 @@ class ExperimentRunner:
             batch_size=self.config.model.batch_size,
         )
         best = find_best_layer(sweep)
-        logger.info(f"Layer sweep complete. Selected layer {best} (R^2_k = {sweep[best]['r2_k']:.4f})")
+        r = sweep[best]
+        logger.info(
+            f"Layer sweep complete. Selected layer {best} "
+            f"(explained_var={r['explained_var']:.4f}, R^2_k={r['r2_k']:.4f})"
+        )
         self.config.model.steering_layer = best
         # Re-load SAE for the selected layer
         self.model_wrapper.get_sae(best)
-        self.results["layer_sweep"] = {k: v["r2_k"] for k, v in sweep.items()}
+        self.results["layer_sweep"] = {
+            k: {"r2_k": v["r2_k"], "explained_var": v["explained_var"]}
+            for k, v in sweep.items()
+        }
         self.results["selected_layer"] = best
 
     def fit_subspace(self):

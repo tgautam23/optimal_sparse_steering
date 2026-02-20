@@ -1,13 +1,18 @@
 """Concept concentration sweep across all transformer layers.
 
 Measures how well class-relevant structure concentrates into a few PCA
-directions at each layer, using the R^2_k metric:
+directions at each layer.  Two metrics are reported:
 
     R^2_k = sum_{j in top-k} s_j^2  /  ||mu_diff||^2
 
 where s_j = v_j^T mu_diff is the class separation along PCA direction v_j.
-High R^2_k means the concept lives in a low-dimensional subspace at that
-layer -- exactly what sparse steering needs.
+High R^2_k means the concept lives in a low-dimensional subspace.
+
+    explained_var = sum_{j in top-k} s_j^2
+
+The absolute explained class separation in the subspace.  Layer selection
+uses ``explained_var`` rather than R^2_k because R^2_k can be trivially
+high at early layers where ||mu_diff|| is near zero.
 """
 
 from __future__ import annotations
@@ -51,7 +56,10 @@ def concept_concentration_sweep(
 
     Returns:
         Dictionary mapping layer index to a dict with keys:
-            - ``r2_k``: Concept concentration score.
+            - ``r2_k``: Concept concentration ratio (fraction of ||mu_diff||^2
+              explained by the top-k subspace).
+            - ``explained_var``: Absolute explained separation
+              (sum of top-k s_j^2).  Used for layer ranking.
             - ``top_separation``: Largest absolute class separation ``|s_1|``.
     """
     y = np.asarray(labels)
@@ -73,7 +81,7 @@ def concept_concentration_sweep(
         mu_diff_sq = float(np.dot(mu_diff, mu_diff))
 
         if mu_diff_sq < 1e-12:
-            results[layer] = {"r2_k": 0.0, "top_separation": 0.0}
+            results[layer] = {"r2_k": 0.0, "explained_var": 0.0, "top_separation": 0.0}
             continue
 
         # PCA via truncated SVD on centered activations
@@ -92,31 +100,37 @@ def concept_concentration_sweep(
         top_idx = np.argsort(np.abs(separations))[::-1][:ns]
         top_s = separations[top_idx]
 
-        r2_k = float(np.sum(top_s ** 2) / mu_diff_sq)
+        explained_var = float(np.sum(top_s ** 2))
+        r2_k = explained_var / mu_diff_sq
         top_separation = float(np.max(np.abs(separations)))
 
-        results[layer] = {"r2_k": r2_k, "top_separation": top_separation}
+        results[layer] = {"r2_k": r2_k, "explained_var": explained_var, "top_separation": top_separation}
 
     # Print summary table
-    print(f"\n{'Layer':>5}  {'R^2_k':>8}  {'|s_1|':>10}")
-    print("-" * 28)
-    best_layer = max(results, key=lambda l: results[l]["r2_k"])
+    print(f"\n{'Layer':>5}  {'R^2_k':>8}  {'Σs_j²':>12}  {'|s_1|':>10}")
+    print("-" * 42)
+    best_layer = max(results, key=lambda l: results[l]["explained_var"])
     for layer in sorted(results):
         r = results[layer]
         marker = " <-- best" if layer == best_layer else ""
-        print(f"{layer:5d}  {r['r2_k']:8.4f}  {r['top_separation']:10.4f}{marker}")
+        print(f"{layer:5d}  {r['r2_k']:8.4f}  {r['explained_var']:12.4f}  {r['top_separation']:10.4f}{marker}")
 
     return results
 
 
 def find_best_layer(sweep_results: dict[int, dict]) -> int:
-    """Return the layer index with the highest concept concentration R^2_k.
+    """Return the layer with the highest absolute explained separation.
+
+    Ranks by ``explained_var`` (sum of top-k s_j^2) rather than R^2_k,
+    because R^2_k can be trivially high at early layers where
+    ``||mu_diff||`` is near zero.
 
     Args:
-        sweep_results: Mapping of layer index to result dict (with ``r2_k``
-            key), as returned by :func:`concept_concentration_sweep`.
+        sweep_results: Mapping of layer index to result dict (with
+            ``explained_var`` key), as returned by
+            :func:`concept_concentration_sweep`.
 
     Returns:
-        Layer index that achieved the highest R^2_k.
+        Layer index that achieved the highest explained_var.
     """
-    return max(sweep_results, key=lambda l: sweep_results[l]["r2_k"])
+    return max(sweep_results, key=lambda l: sweep_results[l]["explained_var"])
