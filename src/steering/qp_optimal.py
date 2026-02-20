@@ -138,8 +138,9 @@ class QPOptimalSteering(SteeringMethod):
         D_sub = D_np[active_idx]  # (n_active, d_model)
 
         # Build k constraints: w_j^T D_sub^T delta >= rhs_j
-        rhs_vec = concept_subspace.compute_rhs(h_np)  # (k,)
-        DW = D_sub @ concept_subspace.directions.T  # (n_active, k)
+        rhs_vec = concept_subspace.compute_rhs(h_np, target_class=target_class)  # (k,)
+        dirs = concept_subspace.get_constraint_directions(target_class)  # (k, d_model)
+        DW = D_sub @ dirs.T  # (n_active, k)
 
         logger.info(
             f"QPOptimal: k={concept_subspace.n_directions} constraints, "
@@ -194,6 +195,8 @@ class QPOptimalSteering(SteeringMethod):
                 logger.error("QPOptimal: all solvers failed")
                 self._solve_status = "failed"
                 self._solve_time = time.time() - t0
+                self._delta = np.zeros(d_sae)
+                self._active_features = np.array([], dtype=int)
                 self._steering_vector = torch.zeros(d_model)
                 return self._steering_vector
 
@@ -207,8 +210,9 @@ class QPOptimalSteering(SteeringMethod):
 
         if problem.status not in ("optimal", "optimal_inaccurate"):
             logger.warning(f"QPOptimal: non-optimal status: {problem.status}")
-            self._steering_vector = torch.zeros(d_model)
             self._delta = np.zeros(d_sae)
+            self._active_features = np.array([], dtype=int)
+            self._steering_vector = torch.zeros(d_model)
             return self._steering_vector
 
         # --- Extract solution ---
@@ -318,8 +322,9 @@ class QPOptimalSteering(SteeringMethod):
 
         # Worst-case: input with smallest minimum projection across
         # concept directions (the hardest to satisfy all constraints)
-        projections = acts_np @ concept_subspace.directions.T  # (batch, k)
-        thresholds = concept_subspace.compute_thresholds()  # (k,)
+        dirs = concept_subspace.get_constraint_directions(target_class)  # (k, d_model)
+        projections = acts_np @ dirs.T  # (batch, k)
+        thresholds = concept_subspace.compute_thresholds(target_class)  # (k,)
         # Margin shortfall per input: max over directions of (threshold - proj)
         shortfalls = thresholds[None, :] - projections  # (batch, k)
         worst_per_input = shortfalls.max(axis=1)  # (batch,)

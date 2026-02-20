@@ -47,6 +47,27 @@ class ExperimentRunner:
         self.data = load_dataset_splits(self.config.data)
         logger.info(f"Train: {len(self.data['train_texts'])}, Test: {len(self.data['test_texts'])}")
 
+    def select_layer(self):
+        """Sweep all layers and select the one with highest concept concentration."""
+        from src.probes.layer_sweep import concept_concentration_sweep, find_best_layer
+
+        sweep = concept_concentration_sweep(
+            texts=self.data["train_texts"],
+            labels=self.data["train_labels"],
+            model_wrapper=self.model_wrapper,
+            n_layers=self.config.model.n_layers,
+            n_components=self.config.steering.subspace_n_components,
+            n_select=self.config.steering.subspace_n_select,
+            batch_size=self.config.model.batch_size,
+        )
+        best = find_best_layer(sweep)
+        logger.info(f"Layer sweep complete. Selected layer {best} (R^2_k = {sweep[best]['r2_k']:.4f})")
+        self.config.model.steering_layer = best
+        # Re-load SAE for the selected layer
+        self.model_wrapper.get_sae(best)
+        self.results["layer_sweep"] = {k: v["r2_k"] for k, v in sweep.items()}
+        self.results["selected_layer"] = best
+
     def fit_subspace(self):
         """Extract activations and fit concept subspace."""
         layer = self.config.model.steering_layer
@@ -201,11 +222,12 @@ class ExperimentRunner:
         # 1. Subspace score on steered activations
         sv = method.steering_vector.numpy()
         steered_acts = self.test_activations + alpha * sv[np.newaxis, :]
+        target_class = self.config.steering.target_class
         base_score = compute_subspace_score(
-            self.concept_subspace, self.test_activations
+            self.concept_subspace, self.test_activations, target_class=target_class
         )
         steered_score = compute_subspace_score(
-            self.concept_subspace, steered_acts
+            self.concept_subspace, steered_acts, target_class=target_class
         )
         eval_results["subspace_score_base"] = base_score
         eval_results["subspace_score_steered"] = steered_score
@@ -304,6 +326,7 @@ class ExperimentRunner:
 
         self.setup()
         self.load_data()
+        self.select_layer()
         self.fit_subspace()
         method = self.compute_steering(method_name)
         eval_results = self.evaluate(method)

@@ -152,36 +152,62 @@ class ConceptSubspace:
     # Constraint helpers
     # ------------------------------------------------------------------
 
-    def compute_rhs(self, h: np.ndarray) -> np.ndarray:
+    def get_constraint_directions(self, target_class: int = 1) -> np.ndarray:
+        """Return the effective constraint directions for a target class.
+
+        For target_class=1 these are the sign-corrected PCA directions
+        ``w_j`` (positive alignment with class 1).  For target_class=0
+        they are negated so that increasing projection moves toward
+        class 0.
+
+        Args:
+            target_class: 0 or 1.
+
+        Returns:
+            Array of shape ``(k, d_model)``.
+        """
+        self._check_fitted()
+        if target_class == 0:
+            return -self._directions
+        return self._directions
+
+    def compute_rhs(self, h: np.ndarray, target_class: int = 1) -> np.ndarray:
         """Compute the RHS vector for multi-constraint QP/SOCP.
 
-        For each direction j the constraint requires:
+        For target_class=1 the constraint requires:
             ``w_j^T (h + D^T delta) >= w_j^T mu_1``
 
-        Rearranging gives ``(D w_j)^T delta >= w_j^T mu_1 - w_j^T h``,
-        so ``gamma_j(h) = w_j^T mu_1 - w_j^T h``.
+        Rearranging: ``(D w_j)^T delta >= w_j^T mu_1 - w_j^T h``.
+
+        For target_class=0 the directions are negated so the constraint
+        pushes toward mu_0 instead.
 
         Args:
             h: Current activation, shape ``(d_model,)``.
+            target_class: Which class to steer toward (0 or 1).
 
         Returns:
             RHS array of shape ``(k,)``.
         """
         self._check_fitted()
         h = np.asarray(h, dtype=np.float64)
-        proj_h = self._directions @ h          # (k,)
-        target = self._directions @ self._mu1  # (k,)
+        dirs = self.get_constraint_directions(target_class)
+        target_mu = self._mu1 if target_class == 1 else self._mu0
+        proj_h = dirs @ h              # (k,)
+        target = dirs @ target_mu      # (k,)
         return target - proj_h
 
-    def compute_thresholds(self) -> np.ndarray:
+    def compute_thresholds(self, target_class: int = 1) -> np.ndarray:
         """Compute target thresholds (without input subtraction).
 
         Returns:
-            Thresholds of shape ``(k,)``: ``w_j^T mu_1`` for each
-            concept direction.
+            Thresholds of shape ``(k,)``: projection of the target
+            class mean along each (effective) constraint direction.
         """
         self._check_fitted()
-        return self._directions @ self._mu1
+        dirs = self.get_constraint_directions(target_class)
+        target_mu = self._mu1 if target_class == 1 else self._mu0
+        return dirs @ target_mu
 
     def compute_prefilter_relevance(self, D: np.ndarray) -> np.ndarray:
         """Compute per-feature relevance for pre-filtering.

@@ -93,17 +93,34 @@ class TestConceptSubspaceConstraintHelpers:
         assert thresholds.shape == (3,)
 
     def test_compute_rhs_consistency(self):
-        """rhs(h) = thresholds - W @ h."""
+        """rhs(h) = thresholds - W @ h for target_class=1."""
         X, y = _make_separable_data()
         cs = ConceptSubspace(n_components=10, n_select=3)
         cs.fit(X, y)
 
         h = np.random.randn(64)
-        rhs = cs.compute_rhs(h)
-        thresholds = cs.compute_thresholds()
-        proj_h = cs.directions @ h
+        rhs = cs.compute_rhs(h, target_class=1)
+        thresholds = cs.compute_thresholds(target_class=1)
+        dirs = cs.get_constraint_directions(target_class=1)
+        proj_h = dirs @ h
 
         np.testing.assert_allclose(rhs, thresholds - proj_h, atol=1e-10)
+
+    def test_compute_rhs_class0_consistency(self):
+        """For target_class=0, directions are negated and target is mu_0."""
+        X, y = _make_separable_data()
+        cs = ConceptSubspace(n_components=10, n_select=3)
+        cs.fit(X, y)
+
+        h = np.random.randn(64)
+        rhs = cs.compute_rhs(h, target_class=0)
+        dirs = cs.get_constraint_directions(target_class=0)
+
+        # Directions for class 0 should be negated
+        np.testing.assert_allclose(dirs, -cs.directions, atol=1e-10)
+
+        # RHS should be (-w_j)^T mu_0 - (-w_j)^T h
+        assert rhs.shape == (3,)
 
     def test_compute_prefilter_relevance_shape(self):
         X, y = _make_separable_data()

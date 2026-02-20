@@ -116,8 +116,9 @@ class ConvexOptimalSteering(SteeringMethod):
         D_sub = D_np[active_idx]  # (n_active, d_model)
 
         # Build k linear constraints: w_j^T D_sub^T delta >= rhs_j
-        rhs_vec = concept_subspace.compute_rhs(h_np)  # (k,)
-        DW = D_sub @ concept_subspace.directions.T  # (n_active, k)
+        rhs_vec = concept_subspace.compute_rhs(h_np, target_class=target_class)  # (k,)
+        dirs = concept_subspace.get_constraint_directions(target_class)  # (k, d_model)
+        DW = D_sub @ dirs.T  # (n_active, k)
 
         logger.info(
             f"ConvexOptimal: k={concept_subspace.n_directions} constraints, "
@@ -145,6 +146,8 @@ class ConvexOptimalSteering(SteeringMethod):
             except cp.SolverError:
                 logger.error("ConvexOptimal: all solvers failed")
                 self._solve_status = "failed"
+                self._delta = np.zeros(d_sae)
+                self._active_features = np.array([], dtype=int)
                 self._steering_vector = torch.zeros(d_model)
                 return self._steering_vector
 
@@ -153,8 +156,9 @@ class ConvexOptimalSteering(SteeringMethod):
 
         if problem.status not in ("optimal", "optimal_inaccurate"):
             logger.warning(f"ConvexOptimal: non-optimal status: {problem.status}")
-            self._steering_vector = torch.zeros(d_model)
             self._delta = np.zeros(d_sae)
+            self._active_features = np.array([], dtype=int)
+            self._steering_vector = torch.zeros(d_model)
             return self._steering_vector
 
         # Extract solution

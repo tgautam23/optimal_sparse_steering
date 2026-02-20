@@ -169,8 +169,7 @@ def optimal_steered_generation_static(
     prompts: list[str],
     steering_method,
     layer: int,
-    probe_w: np.ndarray,
-    probe_b: float,
+    concept_subspace,
     D: torch.Tensor,
     target_class: int = 1,
     alpha: float = 5.0,
@@ -190,8 +189,7 @@ def optimal_steered_generation_static(
         prompts: List of prompt strings.
         steering_method: QPOptimalSteering or ConvexOptimalSteering instance.
         layer: Transformer layer index for steering.
-        probe_w: Probe weight vector, shape (d_model,).
-        probe_b: Probe bias scalar.
+        concept_subspace: Fitted ConceptSubspace instance.
         D: SAE decoder matrix, shape (d_sae, d_model).
         target_class: Target class (0 or 1).
         alpha: Steering strength multiplier.
@@ -223,8 +221,8 @@ def optimal_steered_generation_static(
 
         # Step 2: Solve optimization once
         sv = steering_method.compute_steering_vector(
-            h=h, probe_w=probe_w, probe_b=probe_b,
-            D=D, sae_features=sae_feats, target_class=target_class,
+            h=h, D=D, concept_subspace=concept_subspace,
+            sae_features=sae_feats, target_class=target_class,
         )
         solve_time = steering_method.solve_time
         l0 = int((steering_method.delta > 1e-6).sum())
@@ -278,8 +276,7 @@ def optimal_steered_generation_adaptive(
     prompts: list[str],
     steering_method,
     layer: int,
-    probe_w: np.ndarray,
-    probe_b: float,
+    concept_subspace,
     D: torch.Tensor,
     target_class: int = 1,
     alpha: float = 5.0,
@@ -303,8 +300,7 @@ def optimal_steered_generation_adaptive(
         prompts: List of prompt strings.
         steering_method: QPOptimalSteering or ConvexOptimalSteering instance.
         layer: Transformer layer index for steering.
-        probe_w: Probe weight vector, shape (d_model,).
-        probe_b: Probe bias scalar.
+        concept_subspace: Fitted ConceptSubspace instance.
         D: SAE decoder matrix, shape (d_sae, d_model).
         target_class: Target class (0 or 1).
         alpha: Steering strength multiplier.
@@ -344,8 +340,8 @@ def optimal_steered_generation_adaptive(
 
             # Step 2: Solve optimization for current state
             sv = steering_method.compute_steering_vector(
-                h=h, probe_w=probe_w, probe_b=probe_b,
-                D=D, sae_features=sae_feats, target_class=target_class,
+                h=h, D=D, concept_subspace=concept_subspace,
+                sae_features=sae_feats, target_class=target_class,
             )
             solve_times.append(steering_method.solve_time)
             l0s.append(int((steering_method.delta > 1e-6).sum()))
