@@ -106,31 +106,42 @@ def concept_concentration_sweep(
 
         results[layer] = {"r2_k": r2_k, "explained_var": explained_var, "top_separation": top_separation}
 
-    # Print summary table
+    # Print summary table (best marker uses default skip_last_n=2)
+    selected = find_best_layer(results)
     print(f"\n{'Layer':>5}  {'R^2_k':>8}  {'Σs_j²':>12}  {'|s_1|':>10}")
     print("-" * 42)
-    best_layer = max(results, key=lambda l: results[l]["explained_var"])
     for layer in sorted(results):
         r = results[layer]
-        marker = " <-- best" if layer == best_layer else ""
+        marker = " <-- best" if layer == selected else ""
         print(f"{layer:5d}  {r['r2_k']:8.4f}  {r['explained_var']:12.4f}  {r['top_separation']:10.4f}{marker}")
 
     return results
 
 
-def find_best_layer(sweep_results: dict[int, dict]) -> int:
+def find_best_layer(sweep_results: dict[int, dict], skip_last_n: int = 2) -> int:
     """Return the layer with the highest absolute explained separation.
 
     Ranks by ``explained_var`` (sum of top-k s_j^2) rather than R^2_k,
     because R^2_k can be trivially high at early layers where
     ``||mu_diff||`` is near zero.
 
+    The last ``skip_last_n`` layers are excluded because interventions
+    there have little downstream computation to propagate through,
+    making them poor choices for steering despite strong concept signal.
+
     Args:
         sweep_results: Mapping of layer index to result dict (with
             ``explained_var`` key), as returned by
             :func:`concept_concentration_sweep`.
+        skip_last_n: Number of final layers to exclude from selection.
 
     Returns:
-        Layer index that achieved the highest explained_var.
+        Layer index that achieved the highest explained_var among
+        eligible layers.
     """
-    return max(sweep_results, key=lambda l: sweep_results[l]["explained_var"])
+    max_layer = max(sweep_results)
+    cutoff = max_layer - skip_last_n + 1
+    eligible = {l: v for l, v in sweep_results.items() if l < cutoff}
+    if not eligible:
+        eligible = sweep_results
+    return max(eligible, key=lambda l: eligible[l]["explained_var"])
